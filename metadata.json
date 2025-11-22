@@ -1,0 +1,5 @@
+{
+  "name": "TubeSleep",
+  "description": "Ứng dụng phát nhạc YouTube với tính năng hẹn giờ tắt tự động (Sleep Timer) và tìm kiếm nhạc thông minh bằng AI.",
+  "requestFramePermissions": []
+}
