@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import ReactPlayer from 'react-player';
-import { Plus, Youtube, ListMusic, Volume2, VolumeX, Clock } from 'lucide-react';
+import { Plus, Youtube, ListMusic, Volume2, VolumeX, Clock, AlertCircle } from 'lucide-react';
 import { VideoItem } from './types';
 import TimerControl from './components/TimerControl';
 import Playlist from './components/Playlist';
@@ -15,6 +15,8 @@ const App: React.FC = () => {
   const [currentVideo, setCurrentVideo] = useState<VideoItem | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
+  const [playerError, setPlayerError] = useState<string | null>(null);
+  const [isMounted, setIsMounted] = useState(false);
   
   // Timer State
   const [timerSeconds, setTimerSeconds] = useState(0);
@@ -29,6 +31,12 @@ const App: React.FC = () => {
 
   // Refs
   const playerRef = useRef<ReactPlayer>(null);
+  const consecutiveErrorsRef = useRef(0); // Track errors to prevent infinite loops
+
+  // Ensure client-side rendering for player
+  useEffect(() => {
+    setIsMounted(true);
+  }, []);
 
   // Save playlist to local storage
   useEffect(() => {
@@ -78,6 +86,7 @@ const App: React.FC = () => {
     // Automatically select this video if it's the first one
     if (playlist.length === 0) {
       setCurrentVideo(newItem);
+      setPlayerError(null);
     }
   };
 
@@ -86,6 +95,7 @@ const App: React.FC = () => {
     if (currentVideo?.id === id) {
       setIsPlaying(false);
       setCurrentVideo(null);
+      setPlayerError(null);
     }
   };
 
@@ -93,6 +103,8 @@ const App: React.FC = () => {
     setCurrentVideo(video);
     setIsPlaying(true);
     setIsSleepMode(false);
+    setPlayerError(null);
+    consecutiveErrorsRef.current = 0; // Reset error count on manual play
   };
 
   const handleStartTimer = (minutes: number) => {
@@ -132,6 +144,60 @@ const App: React.FC = () => {
       if (playlist.length > 0) {
           setCurrentVideo(playlist[0]);
       }
+    }
+    setPlayerError(null);
+  };
+
+  const handleVideoPlaySuccess = () => {
+    // Reset error counter when a video successfully starts playing
+    consecutiveErrorsRef.current = 0;
+    setIsPlaying(true);
+  };
+
+  const handleError = (e: any) => {
+    // YouTube Error Codes:
+    // 150, 153: Restricted from embedding (Copyright/Owner blocked)
+    // 101: Not embeddable
+    
+    consecutiveErrorsRef.current += 1;
+    console.warn(`Video Error: ${e}. Consecutive errors: ${consecutiveErrorsRef.current}`);
+
+    // Safety Check: If we have failed more times than there are videos (or a hard limit), stop.
+    // This prevents infinite looping if the whole playlist is broken.
+    const maxErrors = Math.max(playlist.length * 2, 5); 
+    
+    if (consecutiveErrorsRef.current >= maxErrors) {
+        setPlayerError("Quá nhiều lỗi liên tiếp. Đã dừng phát.");
+        setIsPlaying(false);
+        return;
+    }
+
+    // Check if it's a restriction error
+    if (e === 101 || e === 150 || e === 153) {
+        // PREVENT INFINITE LOOP for single video
+        if (playlist.length <= 1) {
+            setPlayerError("Video này không cho phép phát trên web. Vui lòng thêm bài khác.");
+            setIsPlaying(false);
+            return;
+        }
+
+        setPlayerError(`Video bị hạn chế (Mã ${e}). Tự động bỏ qua...`);
+        
+        // Auto-skip to next video shortly
+        setTimeout(() => {
+            handleVideoEnded();
+        }, 1500);
+    } else {
+        // Generic error, try to skip anyway if we have a playlist
+        if (playlist.length > 1) {
+            setPlayerError(`Lỗi phát video (${e}). Đang chuyển bài...`);
+            setTimeout(() => {
+                handleVideoEnded();
+            }, 1500);
+        } else {
+            setPlayerError(`Lỗi phát video: ${e}`);
+            setIsPlaying(false);
+        }
     }
   };
 
@@ -191,23 +257,50 @@ const App: React.FC = () => {
           <div className="lg:col-span-7 space-y-6">
             <div className="aspect-video bg-black rounded-2xl overflow-hidden border border-slate-800 shadow-2xl relative group">
               {currentVideo ? (
-                <ReactPlayer
-                  ref={playerRef}
-                  url={currentVideo.url}
-                  width="100%"
-                  height="100%"
-                  playing={isPlaying}
-                  controls={true}
-                  muted={isMuted}
-                  onEnded={handleVideoEnded}
-                  onPlay={() => setIsPlaying(true)}
-                  onPause={() => setIsPlaying(false)}
-                  config={{
-                    youtube: {
-                      playerVars: { showinfo: 1, playsinline: 1 }
-                    }
-                  }}
-                />
+                <>
+                    {playerError ? (
+                        <div className="w-full h-full flex flex-col items-center justify-center bg-slate-900 text-red-400 p-6 text-center animate-in fade-in duration-300">
+                            <AlertCircle size={48} className="mb-2" />
+                            <p className="font-medium">{playerError}</p>
+                        </div>
+                    ) : isMounted ? (
+                        <ReactPlayer
+                          ref={playerRef}
+                          url={currentVideo.url}
+                          width="100%"
+                          height="100%"
+                          playing={isPlaying}
+                          controls={true}
+                          muted={isMuted}
+                          onEnded={handleVideoEnded}
+                          onError={handleError}
+                          onStart={handleVideoPlaySuccess} // Reset error count on success
+                          onPlay={() => {
+                              setIsPlaying(true);
+                              consecutiveErrorsRef.current = 0; // Extra safety reset
+                          }}
+                          onPause={() => setIsPlaying(false)}
+                          config={{
+                            youtube: {
+                              playerVars: { 
+                                showinfo: 1, 
+                                playsinline: 1,
+                                origin: window.location.origin,
+                                rel: 0,
+                                modestbranding: 1
+                              }
+                            },
+                            attributes: {
+                                referrerPolicy: "strict-origin-when-cross-origin"
+                            }
+                          }}
+                        />
+                    ) : (
+                        <div className="w-full h-full bg-black flex items-center justify-center">
+                            <span className="text-slate-500">Loading Player...</span>
+                        </div>
+                    )}
+                </>
               ) : (
                 <div className="w-full h-full flex flex-col items-center justify-center text-slate-600 bg-slate-900/50">
                   <Youtube size={64} className="mb-4 opacity-20" />
@@ -215,10 +308,10 @@ const App: React.FC = () => {
                 </div>
               )}
               
-              {currentVideo && (
+              {currentVideo && !playerError && (
                 <button 
                     onClick={toggleMute}
-                    className="absolute bottom-4 right-4 p-2 bg-black/60 hover:bg-black/80 text-white rounded-full backdrop-blur-sm transition-opacity opacity-0 group-hover:opacity-100"
+                    className="absolute bottom-4 right-4 p-2 bg-black/60 hover:bg-black/80 text-white rounded-full backdrop-blur-sm transition-opacity opacity-0 group-hover:opacity-100 z-20"
                 >
                     {isMuted ? <VolumeX size={20} /> : <Volume2 size={20} />}
                 </button>
@@ -230,10 +323,12 @@ const App: React.FC = () => {
                 {currentVideo ? currentVideo.title : 'Đang chờ...'}
               </h2>
               <p className="text-sm text-slate-500 flex items-center gap-2">
-                {isPlaying ? (
+                {isPlaying && !playerError ? (
                   <span className="flex items-center gap-2 text-green-400">
                     <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"/> Đang phát
                   </span>
+                ) : playerError ? (
+                    <span className="text-red-400">Gặp sự cố</span>
                 ) : 'Đã dừng'}
               </p>
             </div>
@@ -268,6 +363,7 @@ const App: React.FC = () => {
                                 setPlaylist([]);
                                 setCurrentVideo(null);
                                 setIsPlaying(false);
+                                setPlayerError(null);
                             }
                         }}
                         className="text-xs text-slate-500 hover:text-red-400 transition-colors"
